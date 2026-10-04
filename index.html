@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triplopia Simulator</title>
+<style>
+:root{--bg:#0e1013;--panel:#161920;--line:#262b36;--text:#e6e8ee;--muted:#8b93a7;--accent:#7aa2ff}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 system-ui,"Segoe UI",Roboto,sans-serif;display:grid;grid-template-columns:330px 1fr}
+aside{background:var(--panel);border-right:1px solid var(--line);overflow-y:auto;padding:14px 16px 40px}
+main{display:flex;align-items:center;justify-content:center;padding:16px;position:relative;overflow:hidden;min-width:0}
+main.drag{outline:2px dashed var(--accent);outline-offset:-10px}
+#view{max-width:100%;max-height:calc(100vh - 32px);background:#000;display:block;object-fit:contain}
+h1{font-size:15px;margin:0 0 2px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:12px}
+fieldset{border:1px solid var(--line);border-radius:8px;padding:8px 12px 10px;margin:0 0 10px;min-width:0}
+legend{color:var(--muted);font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:0 4px}
+.row{display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;margin:5px 0 0}
+.row .n{font-size:12px}
+.row .v{font-size:11px;color:var(--muted);font-variant-numeric:tabular-nums;min-width:52px;text-align:right}
+.row input[type=range]{grid-column:1/3;width:100%;margin:2px 0 4px;accent-color:var(--accent)}
+.inline{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}
+button,select,label.file{background:#222733;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer}
+button:hover,label.file:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:#0b1020;border-color:transparent;font-weight:600}
+input[type=file]{display:none}
+.swatch{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.check{display:flex;align-items:center;gap:8px;margin:6px 0;font-size:12px}
+#indicator{display:block;margin:4px auto 0;background:#0b0d11;border-radius:6px}
+.hint{color:var(--muted);font-size:11px;margin-top:4px}
+#hold{position:absolute;right:24px;bottom:24px;user-select:none}
+#status{position:absolute;left:24px;bottom:24px;color:var(--muted);font-size:11px;background:rgba(0,0,0,.5);padding:4px 8px;border-radius:6px}
+@media (max-width:820px){body{grid-template-columns:1fr;grid-template-rows:auto 1fr}aside{border-right:0;border-bottom:1px solid var(--line);max-height:45vh}}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Triplopia Simulator</h1>
+  <div class="sub">Monocular triple vision from an irregular cornea: three fixed focal zones, one wandering focus.</div>
+
+  <fieldset>
+    <legend>Image</legend>
+    <div class="inline">
+      <label class="file"><input type="file" id="file" accept="image/*">Upload image</label>
+      <button id="demoText">Text</button>
+      <button id="demoNight">Night</button>
+      <button id="demoScene">Scene</button>
+    </div>
+    <div class="hint">Or drag and drop a photo onto the view. Hold <b>Space</b> or the button to see the normal image.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Focus dynamics</legend>
+    <div id="dyn"></div>
+    <label class="check"><input type="checkbox" id="manual"> Manual focus (freeze and scrub)</label>
+    <div id="manualRow"></div>
+    <label class="check"><input type="checkbox" id="blink"> Occasional blinks (brief blackout, reshuffles dominance)</label>
+    <canvas id="indicator" width="200" height="130"></canvas>
+    <div class="hint">Live view: dot size is blur, brightness is current weight, ring marks the current winner.</div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Optics</legend>
+    <div id="opt"></div>
+    <div class="row"><span class="n">Always-exposed copy (central zone)</span>
+      <select id="central"><option value="0">Upper</option><option value="1">Lower left</option><option value="2" selected>Lower right</option></select></div>
+    <div class="row"><span class="n">Render quality</span>
+      <select id="taps"><option value="24">Fast</option><option value="48" selected>Balanced</option><option value="96">High</option></select></div>
+  </fieldset>
+
+  <fieldset id="c0"><legend><span class="swatch" style="background:#4a5bff"></span>Copy A: upper</legend></fieldset>
+  <fieldset id="c1"><legend><span class="swatch" style="background:#ff8a2a"></span>Copy B: lower left</legend></fieldset>
+  <fieldset id="c2"><legend><span class="swatch" style="background:#b1122b"></span>Copy C: lower right</legend></fieldset>
+
+  <div class="inline">
+    <button id="reset">Reset defaults</button>
+  </div>
+</aside>
+
+<main id="main">
+  <canvas id="view"></canvas>
+  <div id="status"></div>
+  <button id="hold" class="primary">Hold to see normal</button>
+</main>
+
+<script>
+'use strict';
+// ---------- Parameters ----------
+const DEF = {
+  pupil: 4.5, sep: 1.0, blur: 0, minBlur: 0,
+  dwell: 6, indecision: 0.3, micro: 0.03, attention: 0.6, floor: 0.18,
+  manualFocus: 0.6,
+  x0: 0.2, y0: -0.7, f0: -0.6, b0: 1.0, d0: 0.3,
+  x1: -0.6, y1: 0.4, f1: 0.0, b1: 1.0, d1: 0.1,
+  x2: 0.4, y2: 0.4, f2: 0.6, b2: 1.0, d2: 0.6,
+};
+const P = Object.assign({}, DEF);
+const sliders = {};
+
+function slider(parent, key, label, min, max, step, fmt) {
+  const row = document.createElement('div'); row.className = 'row';
+  const n = document.createElement('span'); n.className = 'n'; n.textContent = label;
+  const v = document.createElement('span'); v.className = 'v';
+  const inp = document.createElement('input'); inp.type = 'range';
+  inp.min = min; inp.max = max; inp.step = step; inp.value = P[key];
+  const show = () => v.textContent = fmt ? fmt(P[key]) : (+P[key]).toFixed(2);
+  inp.addEventListener('input', () => { const v = parseFloat(inp.value); P[key] = Number.isFinite(v) ? v : DEF[key]; show(); });
+  row.append(n, v, inp); parent.appendChild(row); show();
+  sliders[key] = { inp, show };
+}
+const dyn = document.getElementById('dyn');
+slider(dyn, 'dwell', 'Dominance drift timescale (slower = longer)', 1, 20, 0.1, v => v.toFixed(1) + ' s');
+slider(dyn, 'indecision', 'Indecision (contrast collapses, all copies equal)', 0, 1, 0.01, v => Math.round(v * 100) + '%');
+slider(dyn, 'micro', 'Focus microfluctuation', 0, 0.5, 0.01);
+slider(dyn, 'attention', 'Dominance contrast (how much the leader stands out)', 0, 1, 0.01, v => Math.round(v * 100) + '%');
+slider(dyn, 'floor', 'Minimum presence of every copy (never vanishes)', 0, 0.33, 0.01, v => Math.round(v * 100) + '%');
+slider(document.getElementById('manualRow'), 'manualFocus', 'Focus position', -1.2, 1.2, 0.01);
+
+const opt = document.getElementById('opt');
+slider(opt, 'pupil', 'Pupil diameter (dim room = large)', 2, 8, 0.1, v => v.toFixed(1) + ' mm');
+slider(opt, 'sep', 'Copy separation scale', 0, 4, 0.01, v => v.toFixed(2) + '×');
+slider(opt, 'blur', 'Defocus blur of non-dominant copies', 0, 6, 0.05, v => v.toFixed(2));
+slider(opt, 'minBlur', 'Baseline blur of in-focus copy', 0, 1, 0.01, v => v.toFixed(2) + '%');
+
+for (let i = 0; i < 3; i++) {
+  const fs = document.getElementById('c' + i);
+  slider(fs, 'x' + i, 'Horizontal offset', -5, 5, 0.05, v => v.toFixed(2) + '%');
+  slider(fs, 'y' + i, 'Vertical offset (negative = up)', -5, 5, 0.05, v => v.toFixed(2) + '%');
+  slider(fs, 'f' + i, 'Focal power of this zone', -1.2, 1.2, 0.01);
+  slider(fs, 'b' + i, 'Brightness (zone area)', 0, 2, 0.01, v => v.toFixed(2) + '×');
+  slider(fs, 'd' + i, 'How often focus lands here', 0, 1, 0.01, v => Math.round(v * 100) + '%');
+}
+
+const manualCB = document.getElementById('manual');
+const blinkCB = document.getElementById('blink');
+const centralSel = document.getElementById('central');
+const tapsSel = document.getElementById('taps');
+document.getElementById('reset').onclick = () => {
+  Object.assign(P, DEF);
+  for (const k in sliders) { sliders[k].inp.value = P[k]; sliders[k].show(); }
+  centralSel.value = '2';
+};
+
+// ---------- WebGL ----------
+const canvas = document.getElementById('view');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) { document.getElementById('status').textContent = 'WebGL2 is required.'; throw new Error('no webgl2'); }
+
+const VS = `#version 300 es
+out vec2 vUv;
+void main(){
+  vec2 p = vec2((gl_VertexID<<1)&2, gl_VertexID&2);
+  vUv = p;
+  gl_Position = vec4(p*2.0-1.0, 0.0, 1.0);
+}`;
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D uTex;
+uniform vec2 uRes;
+uniform vec2 uOff[3];
+uniform float uBlur[3];
+uniform float uW[3];
+uniform int uTaps;
+uniform int uMode;
+in vec2 vUv;
+out vec4 outColor;
+const float GA = 2.39996323;
+vec3 toLin(vec3 c){ return pow(c, vec3(2.2)); }
+vec3 toSrgb(vec3 c){ return pow(max(c, vec3(0.0)), vec3(1.0/2.2)); }
+float ign(vec2 p){ return fract(52.9829189*fract(0.06711056*p.x+0.00583715*p.y)); }
+bool inB(vec2 p){ return all(greaterThanEqual(p, vec2(0.0))) && all(lessThanEqual(p, vec2(1.0))); }
+vec3 fetch(vec2 p, float lod){ return inB(p) ? toLin(textureLod(uTex, p, lod).rgb) : vec3(0.0); }
+// Geometric defocus: a uniform disk point-spread function of radius R (in fractions of image height).
+vec3 copy(vec2 uv, vec2 off, float R, float rot){
+  vec2 asp = vec2(uRes.y/uRes.x, 1.0);
+  vec2 c = uv + off*asp;
+  float Rpx = R*uRes.y;
+  if (Rpx < 0.35) return fetch(c, 0.0);
+  float n = float(uTaps);
+  float lod = max(0.0, log2(2.0*Rpx/sqrt(n)));
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 128; i++) {
+    if (i >= uTaps) break;
+    float fi = float(i);
+    float r = sqrt((fi+0.5)/n)*R;
+    float th = fi*GA + rot;
+    acc += fetch(c + vec2(cos(th), sin(th))*r*asp, lod);
+  }
+  return acc/n;
+}
+void main(){
+  if (uMode == 1) { outColor = vec4(texture(uTex, vUv).rgb, 1.0); return; }
+  if (uMode == 2) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  float rot = ign(gl_FragCoord.xy)*6.2831853;
+  // Light from the three corneal zones adds on the retina: sum in linear light, never alpha-blend.
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 3; i++) {
+    if (uW[i] > 0.0005) sum += uW[i]*copy(vUv, uOff[i], uBlur[i], rot + float(i)*2.1);
+  }
+  outColor = vec4(toSrgb(sum), 1.0);
+}`;
+function compile(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+const U = {};
+for (const n of ['uTex', 'uRes', 'uOff', 'uBlur', 'uW', 'uTaps', 'uMode']) U[n] = gl.getUniformLocation(prog, n);
+const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+let hasImage = false;
+
+function setImage(src) {
+  const MAX = 1600;
+  const scale = Math.min(1, MAX / Math.max(src.width, src.height));
+  const w = Math.round(src.width * scale), h = Math.round(src.height * scale);
+  let img = src;
+  if (scale < 1) { const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').drawImage(src, 0, 0, w, h); img = c; }
+  canvas.width = w; canvas.height = h;
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.viewport(0, 0, w, h);
+  hasImage = true;
+}
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => { setImage(im); URL.revokeObjectURL(url); };
+  im.src = url;
+}
+document.getElementById('file').addEventListener('change', e => loadFile(e.target.files[0]));
+const mainEl = document.getElementById('main');
+mainEl.addEventListener('dragover', e => { e.preventDefault(); mainEl.classList.add('drag'); });
+mainEl.addEventListener('dragleave', () => mainEl.classList.remove('drag'));
+mainEl.addEventListener('drop', e => { e.preventDefault(); mainEl.classList.remove('drag'); loadFile(e.dataTransfer.files[0]); });
+window.addEventListener('paste', e => { const it = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/')); if (it) loadFile(it.getAsFile()); });
+
+// ---------- Demo images ----------
+function demoCanvas(w, h, draw) { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d'), w, h); return c; }
+function demoText() {
+  return demoCanvas(1400, 1000, (g, w, h) => {
+    g.fillStyle = '#f6f3ea'; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#111';
+    g.font = 'bold 150px Georgia, serif'; g.fillText('5  5  5', 90, 200);
+    g.font = '600 56px system-ui, sans-serif'; g.fillText('Reading with an irregular cornea', 90, 320);
+    g.font = '30px system-ui, sans-serif';
+    const lines = ['Three focal zones each throw their own image of this line.',
+      'When focus lands on one zone, that copy sharpens and reads as real.',
+      'Between zones, nothing is sharp and the letters pile on each other.',
+      'Small text suffers most because the copies overlap letter to letter.',
+      'Thin strokes and high contrast make the effect most visible.'];
+    lines.forEach((t, i) => g.fillText(t, 90, 400 + i * 50));
+    g.font = '18px system-ui, sans-serif';
+    for (let i = 0; i < 8; i++) g.fillText('Fine print line ' + (i + 1) + ': the quick brown fox jumps over the lazy dog 0123456789', 90, 700 + i * 30);
+    g.strokeStyle = '#111'; g.lineWidth = 3; g.strokeRect(1000, 120, 300, 220);
+    g.beginPath(); g.arc(1150, 230, 70, 0, Math.PI * 2); g.stroke();
+  });
+}
+function demoNight() {
+  return demoCanvas(1400, 900, (g, w, h) => {
+    const grad = g.createLinearGradient(0, 0, 0, h); grad.addColorStop(0, '#05070f'); grad.addColorStop(1, '#0c0f18');
+    g.fillStyle = grad; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#131722'; g.fillRect(0, 600, w, 300);
+    const lamp = (x, y, r, col) => { const rg = g.createRadialGradient(x, y, 0, x, y, r * 3); rg.addColorStop(0, col); rg.addColorStop(0.35, col); rg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = rg; g.fillRect(x - r * 3, y - r * 3, r * 6, r * 6); g.fillStyle = '#fff'; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill(); };
+    [[200, 420], [480, 440], [760, 455], [1040, 465], [1300, 470]].forEach(([x, y], i) => lamp(x, y, 7 - i, '#ffd79a'));
+    for (let i = 0; i < 40; i++) lamp(60 + Math.random() * 1280, 80 + Math.random() * 250, 1.5 + Math.random() * 1.5, '#dfe8ff');
+    lamp(1150, 640, 10, '#ff3b3b'); lamp(1210, 640, 10, '#ffb13b');
+    g.fillStyle = '#ffe9a8'; for (let i = 0; i < 12; i++) g.fillRect(300 + (i % 4) * 60, 250 + Math.floor(i / 4) * 70, 30, 40);
+    g.fillStyle = '#2bd1ff'; g.font = 'bold 64px system-ui, sans-serif'; g.fillText('OPEN', 820, 330);
+    g.strokeStyle = '#ffd79a'; g.lineWidth = 4; g.setLineDash([40, 40]); g.beginPath(); g.moveTo(0, 760); g.lineTo(w, 760); g.stroke();
+  });
+}
+function demoScene() {
+  return demoCanvas(1400, 900, (g, w, h) => {
+    const sky = g.createLinearGradient(0, 0, 0, 500); sky.addColorStop(0, '#6aa9ff'); sky.addColorStop(1, '#cfe6ff');
+    g.fillStyle = sky; g.fillRect(0, 0, w, 500);
+    g.fillStyle = '#5c9a4a'; g.fillRect(0, 500, w, 400);
+    g.fillStyle = '#e8e4d8'; g.fillRect(250, 260, 420, 300);
+    g.fillStyle = '#9b3b2e'; g.beginPath(); g.moveTo(220, 270); g.lineTo(460, 110); g.lineTo(700, 270); g.closePath(); g.fill();
+    g.fillStyle = '#2f3a4a'; for (let i = 0; i < 3; i++) g.fillRect(290 + i * 120, 320, 70, 90);
+    g.fillStyle = '#5a3a1e'; g.fillRect(430, 440, 70, 120);
+    g.fillStyle = '#3b2a18'; g.fillRect(960, 380, 40, 200);
+    g.fillStyle = '#2e7d32'; g.beginPath(); g.arc(980, 330, 120, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; g.beginPath(); g.arc(1150, 130, 60, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#222'; g.font = 'bold 54px system-ui, sans-serif'; g.fillText('STOP', 60, 760);
+    g.fillStyle = '#d32f2f'; g.beginPath(); for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; g.lineTo(1200 + 80 * Math.cos(a), 700 + 80 * Math.sin(a)); } g.closePath(); g.fill();
+    g.fillStyle = '#fff'; g.font = 'bold 44px system-ui, sans-serif'; g.fillText('STOP', 1140, 716);
+    g.strokeStyle = '#fff'; g.lineWidth = 6; g.beginPath(); g.moveTo(0, 860); g.lineTo(w, 860); g.stroke();
+  });
+}
+document.getElementById('demoText').onclick = () => setImage(demoText());
+document.getElementById('demoNight').onclick = () => setImage(demoNight());
+document.getElementById('demoScene').onclick = () => setImage(demoScene());
+setImage(demoText());
+
+// ---------- Dominance dynamics ----------
+// There are no switch events. Each copy carries a slowly wandering dominance signal (smoothed
+// Ornstein-Uhlenbeck noise). Weights come from a soft competition among the three, so the winner
+// changes by continuous crossfade. Focus follows the weighted mean of the zone powers.
+function gauss() { let u = 0, v = 0; while (u === 0) u = Math.random(); while (v === 0) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+const dom = { n: [0.4, -0.4, 0.8], s: [0.4, -0.4, 0.8], m: 0, ms: 0, blinkIn: 5, blinkT: 0, a: 0.6, wdom: [1 / 3, 1 / 3, 1 / 3] };
+function stepDom(dt) {
+  const tau = Math.max(0.5, sane(P.dwell, DEF.dwell));
+  for (let i = 0; i < 3; i++) {
+    dom.n[i] += (-dom.n[i] / tau) * dt + Math.sqrt(2 * dt / tau) * gauss();
+    dom.s[i] += (dom.n[i] - dom.s[i]) * (1 - Math.exp(-dt / (tau * 0.4)));
+  }
+  const tm = tau * 1.5;
+  dom.m += (-dom.m / tm) * dt + Math.sqrt(2 * dt / tm) * gauss();
+  dom.ms += (dom.m - dom.ms) * (1 - Math.exp(-dt / (tm * 0.4)));
+}
+function smoothstep(a, b, x) { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+function computeDominance() {
+  const powers = [P.f0, P.f1, P.f2], bias = [P.d0, P.d1, P.d2];
+  const logit = [0, 0, 0];
+  if (manualCB.checked) {
+    const a = P.manualFocus;
+    for (let i = 0; i < 3; i++) logit[i] = -4 * P.attention * Math.abs(a - powers[i]) / 0.6 + Math.log(bias[i] + 0.05);
+    dom.a = a;
+  } else {
+    const collapse = P.indecision * smoothstep(0.2, 1.1, dom.ms);
+    const k = 3 * P.attention * (1 - collapse);
+    for (let i = 0; i < 3; i++) logit[i] = k * dom.s[i] + Math.log(bias[i] + 0.05);
+  }
+  for (let i = 0; i < 3; i++) logit[i] = sane(logit[i], 0);
+  const mx = Math.max(...logit);
+  const e = logit.map(l => Math.exp(l - mx));
+  const se = e[0] + e[1] + e[2];
+  // No copy ever disappears: each keeps at least `floor` of the total, the rest is competed for.
+  const fl = Math.min(0.33, P.floor);
+  for (let i = 0; i < 3; i++) dom.wdom[i] = fl + (1 - 3 * fl) * e[i] / se;
+  if (!manualCB.checked) dom.a = dom.wdom[0] * powers[0] + dom.wdom[1] * powers[1] + dom.wdom[2] * powers[2];
+}
+
+// ---------- Render loop ----------
+const holdBtn = document.getElementById('hold');
+let holding = false;
+holdBtn.addEventListener('pointerdown', () => holding = true);
+window.addEventListener('pointerup', () => holding = false);
+window.addEventListener('keydown', e => { if (e.code === 'Space' && e.target.tagName !== 'INPUT') { holding = true; e.preventDefault(); } });
+window.addEventListener('keyup', e => { if (e.code === 'Space') holding = false; });
+
+const ind = document.getElementById('indicator').getContext('2d');
+const statusEl = document.getElementById('status');
+const copyCols = ['#4a5bff', '#ff8a2a', '#b1122b'];
+let last = performance.now();
+const off = new Float32Array(6), blur = new Float32Array(3), wts = new Float32Array(3);
+
+function sane(v, fallback) { return Number.isFinite(v) ? v : fallback; }
+function frame() {
+  // Use our own clock: never trust the rAF argument (some embedders wrap rAF and pass nothing).
+  const now = performance.now();
+  let dt = (now - last) / 1000; last = now;
+  if (!Number.isFinite(dt) || dt < 0) dt = 1 / 60;
+  dt = Math.min(0.1, dt);
+  const t = now / 1000;
+  // If anything ever went non-finite (bad frame, bad slider value), reset the dynamics instead of sticking at NaN.
+  for (let i = 0; i < 3; i++) { dom.n[i] = sane(dom.n[i], 0); dom.s[i] = sane(dom.s[i], 0); }
+  dom.m = sane(dom.m, 0); dom.ms = sane(dom.ms, 0); dom.a = sane(dom.a, 0);
+  for (const k in P) if (!Number.isFinite(P[k])) P[k] = DEF[k];
+  stepDom(dt);
+  computeDominance();
+
+  let blinking = false;
+  if (blinkCB.checked && !manualCB.checked) {
+    dom.blinkIn -= dt;
+    if (dom.blinkIn <= 0) { dom.blinkT = 0.12; dom.blinkIn = 4 + Math.random() * 5; for (let i = 0; i < 3; i++) dom.n[i] = gauss(); }
+    if (dom.blinkT > 0) { dom.blinkT -= dt; blinking = true; }
+  }
+
+  const micro = manualCB.checked ? 0 : P.micro * (0.6 * Math.sin(t * 2 * Math.PI * 1.3) + 0.4 * Math.sin(t * 2 * Math.PI * 0.47 + 1.7));
+  const aEff = dom.a + micro;
+  const pupilK = P.pupil / 4.5;
+  const ramp = Math.min(1, Math.max(0, (P.pupil - 2.5) / 2.5));
+  const central = +centralSel.value;
+  const powers = [P.f0, P.f1, P.f2], bright = [P.b0, P.b1, P.b2];
+  const xs = [P.x0, P.x1, P.x2], ys = [P.y0, P.y1, P.y2];
+  let wsum = 0;
+  for (let i = 0; i < 3; i++) {
+    blur[i] = (P.blur * Math.abs(aEff - powers[i]) + P.minBlur) / 100 * pupilK;
+    const w = bright[i] * (i === central ? 1 : ramp) * dom.wdom[i];
+    wts[i] = w; wsum += w;
+    off[i * 2] = -xs[i] / 100 * P.sep;
+    off[i * 2 + 1] = ys[i] / 100 * P.sep;
+  }
+  if (wsum > 0 && Number.isFinite(wsum)) for (let i = 0; i < 3; i++) wts[i] /= wsum; else wts.fill(1 / 3);
+
+  if (hasImage) {
+    gl.uniform1i(U.uTex, 0);
+    gl.uniform2f(U.uRes, canvas.width, canvas.height);
+    gl.uniform2fv(U.uOff, off);
+    gl.uniform1fv(U.uBlur, blur);
+    gl.uniform1fv(U.uW, wts);
+    gl.uniform1i(U.uTaps, +tapsSel.value);
+    gl.uniform1i(U.uMode, holding ? 1 : (blinking ? 2 : 0));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  // Indicator
+  const W = 200, H = 130; ind.clearRect(0, 0, W, H);
+  ind.fillStyle = '#0b0d11'; ind.fillRect(0, 0, W, H);
+  const scale = 40;
+  const winner = wts.indexOf(Math.max(wts[0], wts[1], wts[2]));
+  for (let i = 0; i < 3; i++) {
+    const cx = W / 2 + xs[i] * P.sep * scale, cy = H / 2 + ys[i] * P.sep * scale;
+    const rad = 4 + blur[i] * 100 * 6;
+    ind.globalAlpha = 0.25 + 0.75 * Math.min(1, wts[i] * 2);
+    ind.fillStyle = copyCols[i]; ind.beginPath(); ind.arc(cx, cy, rad, 0, Math.PI * 2); ind.fill();
+    if (i === winner) { ind.globalAlpha = 1; ind.strokeStyle = '#fff'; ind.lineWidth = 1.5; ind.beginPath(); ind.arc(cx, cy, rad + 4, 0, Math.PI * 2); ind.stroke(); }
+  }
+  ind.globalAlpha = 1;
+  const names = ['upper', 'lower left', 'lower right'];
+  const spread = Math.max(wts[0], wts[1], wts[2]) - Math.min(wts[0], wts[1], wts[2]);
+  statusEl.textContent = holding ? 'Normal vision' : blinking ? 'blink' :
+    `weights ${wts[0].toFixed(2)} / ${wts[1].toFixed(2)} / ${wts[2].toFixed(2)} · leading: ${names[winner]}${spread < 0.12 ? ' · all three roughly equal' : ''}`;
+
+  requestAnimationFrame(frame);
+}
+document.addEventListener('visibilitychange', () => { last = performance.now(); });
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
